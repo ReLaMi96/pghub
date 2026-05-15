@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"tcptohttp/internal/headers"
 )
 
 type RequestLine struct {
@@ -15,19 +16,22 @@ type RequestLine struct {
 type parserState string
 
 const (
-	StateInit  parserState = "init"
-	StateDone  parserState = "done"
-	StateError parserState = "error"
+	StateInit    parserState = "init"
+	StateDone    parserState = "done"
+	StateHeaders parserState = "headers"
+	StateError   parserState = "error"
 )
 
 type Request struct {
 	RequestLine RequestLine
+	Headers     headers.Headers
 	state       parserState
 }
 
 func newRequest() *Request {
 	return &Request{
-		state: StateInit,
+		state:   StateInit,
+		Headers: headers.NewHeaders(),
 	}
 }
 
@@ -36,6 +40,7 @@ var ERROR_INCOMPLETE_START_LINE = fmt.Errorf("incomplete start line")
 var ERROR_INCOMPATIBLE_HTTP_VERSION = fmt.Errorf("bad http version")
 var ERROR_REQUEST_ERROR_STATE = fmt.Errorf("request in error")
 var SEPARATOR = []byte("\r\n")
+var BODYSEP = []byte("\r\n\r\n")
 
 func RequestFromReader(reader io.Reader) (*Request, error) {
 
@@ -52,7 +57,7 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 
 		bufIdx += n
 
-		readN, err := request.parse(buf[:bufIdx+n])
+		readN, err := request.parse(buf[:bufIdx])
 		if err != nil {
 			return nil, err
 		}
@@ -70,11 +75,12 @@ func (r *Request) parse(data []byte) (int, error) {
 	read := 0
 outer:
 	for {
+		currentData := data[read:]
 		switch r.state {
 		case StateError:
 			return 0, ERROR_REQUEST_ERROR_STATE
 		case StateInit:
-			rl, n, err := parseRequestline(data[read:])
+			rl, n, err := parseRequestline(currentData)
 			if err != nil {
 				r.state = StateError
 				return 0, err
@@ -85,7 +91,23 @@ outer:
 			r.RequestLine = *rl
 			read += n
 
-			r.state = StateDone
+			r.state = StateHeaders
+
+		case StateHeaders:
+			n, done, err := r.Headers.Parse(currentData)
+			if err != nil {
+				return read, err
+			}
+
+			if done {
+				r.state = StateDone
+			}
+
+			if n == 0 {
+				break outer
+			}
+
+			read += n
 
 		case StateDone:
 			break outer
